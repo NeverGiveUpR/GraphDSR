@@ -1,0 +1,15 @@
+{
+    "operator_list": ["add", "div", "sub", "mul", "sin", "cos", "sqrt", "square", "exp", "log"],
+    "var_number": 1,
+    "data_dir": "",
+    "valid_data_dir": "",
+    "node_num": 6,
+    "hidden_size": 128,
+    "pass_steps": 2,
+    "learning_rate": 0.001,
+    "epoch": 100,
+    "batch_size": 200,
+    "risk": 0.2,
+    "explore_rate": 0.1,
+    "stop_criteria": 0.999
+}
