@@ -8,6 +8,39 @@ import copy
 import time
 import threading
 import queue
+import re
+import argparse
+import json
+
+def load_defaults_config():
+    """
+    Load defaults for training args.
+    """
+    with open('./config.json', 'r') as f:
+        return json.load(f)
+
+def add_dict_to_argparser(parser, default_dict):
+    for k, v in default_dict.items():
+        v_type = type(v)
+        if v is None:
+            v_type = str
+        elif isinstance(v, bool):
+            v_type = str2bool
+        parser.add_argument(f"--{k}", default=v, type=v_type)
+    return parser
+
+def str2bool(v):
+    """
+    https://stackoverflow.com/questions/15008758/parsing-boolean-values-with-argparse
+    """
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError("boolean value expected")
 
 # rewrite the sqrt function, protected
 def sqrt(x):
@@ -262,25 +295,26 @@ def constant_optimize_an_expr(node, adj, operators, X, y):
             print("Arity error! Exceeding the maximum arity.")
             quit()
 
+    '''
+    optim = th.optim.Adam([parameter], lr=0.01)
+    optim = th.optim.Adagrad([parameter], lr=0.01)
+    for i in range(100):
+        y_pred = parameter[-1]*graph_to_infix_(0)
+        y_pred = th.clamp(y_pred, min=-1e3, max=1e3)
+        loss = th.mean(th.square(y_pred-y))
+        # print("{} | loss:{}".format(i, loss.item()))
+        optim.zero_grad()
+        try:
+            loss.backward()
+            th.nn.utils.clip_grad_norm_([parameter], max_norm=1, norm_type=2)
+            optim.step()
+        except:
+            pass
+        print("SGD loss:{}".format(loss.item()))
+        re = reward(y.numpy(), y_pred.detach().numpy())
+        print("reward:", re)
 
-    # optim = th.optim.Adam([parameter], lr=0.01)
-    # optim = th.optim.Adagrad([parameter], lr=0.01)
-    # for i in range(100):
-    #     y_pred = parameter[-1]*graph_to_infix_(0)
-    #     y_pred = th.clamp(y_pred, min=-1e3, max=1e3)
-    #     loss = th.mean(th.square(y_pred-y))
-    #     # print("{} | loss:{}".format(i, loss.item()))
-    #     optim.zero_grad()
-    #     try:
-    #         loss.backward()
-    #         th.nn.utils.clip_grad_norm_([parameter], max_norm=1, norm_type=2)
-    #         optim.step()
-    #     except:
-    #         pass
-    # print("SGD loss:{}".format(loss.item()))
-    # re = reward(y.numpy(), y_pred.detach().numpy())
-    # print("reward:", re)
-
+    '''
     expr = str(parameter[-1].item()) + '*' + graph_to_infix_str(0)
     # print("SGD expr:", expr)
     s = time.time()
@@ -288,14 +322,16 @@ def constant_optimize_an_expr(node, adj, operators, X, y):
         sympy_expr = stop_after_timeout(sympy_form, 5, expr)
         expr = stop_after_timeout(BFGS, 10, sympy_expr, X.numpy(), y.numpy())
     except:
-        # print("exceed sympy")
+        print("exceed sympy")
         sympy_expr = sympy.sympify(expr, dict(square=square))
         expr = sympy_expr
+    
 
     e = time.time()
-    # print(expr)
-    # print(e-s, "s")
-    # print()
+    print("finished optimizing an expression...")
+    print(expr)
+    print(e-s, "s")
+    print()
     return str(expr)
   
 def sympy_form(expr):
@@ -398,6 +434,65 @@ def constant_optimize(nodes, adjs, operators, X, y):
 
         expr = constant_optimize_an_expr(node, adj, operators, X, y)
         cst_expr.append(str(expr))
+
+    return cst_expr
+
+
+def constant_optimize_by_str(infixes, X, y):
+    X = th.tensor(X)
+    y = th.tensor(y)
+
+    cst_expr = []
+
+    def turn_to_expr(infix):
+        counter = [0]
+        c_dict = {}
+        def replace_C(match):
+            result = f"C{counter[0]}"
+            c_dict[sympy.Symbol('C'+str(counter[0]))] = np.random.randn() 
+            counter[0] += 1
+            return result
+        renamed_expr_str = re.sub(r'\bC\b', replace_C, infix)
+        return renamed_expr_str, c_dict
+
+    def target(constants):
+        dicts = copy.deepcopy(dicts_)
+        for i in range(len(constants)):
+            dicts[sympy.Symbol('C'+str(i))] = constants[i]
+        # print("dicts:", dicts)
+        y_pred = sympy.lambdify(dicts.keys(), str(new_expr))(**dicts)
+        # print("y_pred:", y_pred)
+        return np.mean((y_pred-y)**2)
+    
+    for infix in infixes:
+        print("infix:", infix)
+        expr, c_dict = turn_to_expr(infix)
+        new_expr = sympy.sympify(expr)
+        print("new_expr:", new_expr)
+        #new_expr = expr.subs(c_dict)
+        #print("new_expr:", new_expr)
+        print("c_dict:", c_dict)
+        if c_dict == {}:
+            learned_expr = new_expr
+        else:
+            dicts_ = {}
+            for i in range(X.shape[1]):
+                dicts_['x'+str(i+1)] = X[:, i]
+
+            values = [c_dict[key] for key in c_dict]
+            results = minimize(target, values, 
+                            method='BFGS',
+                            options={'maxiter':100}) 
+            constants = results.x
+            # loss = target(constants)
+            learned_expr = new_expr
+            for i in range(len(values)):
+                a = sympy.symbols("C"+str(i))
+                learned_expr = learned_expr.subs(a, constants[i].round(6))
+
+        print("learned_expr:", learned_expr)
+        print()
+    quit()
 
     return cst_expr
 
