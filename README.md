@@ -1,5 +1,5 @@
 # GraphDSR
-Official code of GraphDSR  
+Official code of paper "Mathematical expression exploration with graph representation and generative graph neural network", published in Neural Networks, 2025.
 Python version: Python 3.6.15  
 System: Linux  
 
