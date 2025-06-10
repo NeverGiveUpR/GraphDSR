@@ -8,6 +8,8 @@ import torch.nn.functional as F
 import random
 import copy
 import os
+import pdb
+import json
 
 from plot import print_graph
 
@@ -92,7 +94,7 @@ class ExprGraph:
         # constrain it with arity, if the arity is less than 
 
         # maximum node constraint
-        # if the current graph has no vairable, only variable can be selected as new node
+        # if the current graph has no vairable, only variable node can be selected as new node
         # remove the padding node
         valid_nodes = nodes==self.operators.token2id['P']
         valid_nodes = (~valid_nodes).float().sum(dim=1)
@@ -497,16 +499,283 @@ class ExprGraph:
             print("Arity error! Exceeding the maximum arity.")
             quit()
 
-    def graph_to_infix(self, nodes, adjs):
+    def graph_to_infix_str(self, root, node, adj):
+        #print("root:", root)
+        #print("node:", node)
+        root_str = self.operators.id2token[node[root]]
+        arity = self.operators.arity_i(node[root])
+        if arity == 0:
+            return str(root_str)
+        elif arity == 1:
+            index = th.nonzero(adj[:, root]).view(-1).tolist()[0]
+            infix = self.graph_to_infix_str(index, node, adj)
+            #cst = p_dict[str([index, root])].item()
+            if root_str=='square':
+                return '({})**2'.format(str(infix))
+            elif root_str == 'sqrt':
+                return 'sqrt({})'.format(str(infix))
+            elif root_str == 'log':
+                return 'log({})'.format(str(infix))
+            else:
+                return '{}({})'.format(root_str, str(infix))
+        elif arity == 2:
+            non_zero = th.nonzero(adj[:, root]).view(-1).tolist()
+            if len(non_zero) == 2:
+                l_index = non_zero[0]
+                r_index = non_zero[1]
+            else:
+                l_index = non_zero[0]
+                r_index = non_zero[0]
+            l_infix = self.graph_to_infix_str(l_index, node, adj)
+            r_infix = self.graph_to_infix_str(r_index, node, adj)
+            #l_cst = p_dict[str([l_index, root])].item()
+            #r_cst = p_dict[str([r_index, root])].item()
+            if root_str == 'add':
+                return '({})+({})'.format(str(l_infix), str(r_infix))
+            elif root_str == 'sub':
+                return '({})-({})'.format(str(l_infix), str(r_infix))
+            elif root_str == 'mul':
+                return '({})*({})'.format(str(l_infix), str(r_infix))
+            else:
+                return '({})/({})'.format(str(l_infix), str(r_infix))
+        else:
+            print("Arity error! Exceeding the maximum arity.")
+            quit()
+
+
+
+    def graph_to_infix(self, nodes, adjs, string=True):
         # change an expression graph to infix
         infixes = []
         for node, adj in zip(nodes, adjs):
             # print("--------------------------------------------")
-            infix = self.graph_to_infix_(0, node.tolist(), adj)
+            if string:
+                infix = self.graph_to_infix_str(0, node.tolist(), adj)
+            else:
+                infix = self.graph_to_infix_(0, node.tolist(), adj)
             infixes.append(infix)
 
         return infixes
     
+    
+        
+    
     def infix_to_graph(self, infix):
         # change an expression infix to graph
         return
+
+class Node:
+    def __init__(self, node_type, id):
+        self.node_type = node_type
+        self.out = None
+        self.id = id
+        self.weight = None
+
+    def __call__(self, inputs):
+        if self.node_type == 'add':
+            # only the add and sub nodes have the bias 
+            out = self.weight[0]*inputs[:, 0] + self.weight[1]*inputs[:, 1]+self.weight[2]
+        elif self.node_type == 'div':
+            out = self.weight[0]*inputs[:, 0]/(inputs[:, 1]+1e-5)
+        elif self.node_type == 'sub':
+            out = self.weight[0]*inputs[:, 0] - self.weight[1]*inputs[:, 1]+self.weight[2]
+        elif self.node_type == 'mul':
+            out = self.weight[0]*inputs[:, 0] * inputs[:, 1]
+        elif self.node_type == 'sin':
+            out = self.weight[0]*th.sin(inputs[:, 0])
+        elif self.node_type == 'cos':
+            out = self.weight[0]*th.cos(inputs[:, 0])
+        elif self.node_type == 'sqrt':
+            out = self.weight[0]*th.sqrt(th.abs(inputs[:, 0]))
+        elif self.node_type == 'square':
+            out = self.weight[0]*inputs[:, 0]**2
+        elif self.node_type == 'exp':
+            out = self.weight[0]*th.exp(inputs[:, 0])
+            out = th.clamp(out, min=0, max=1e5)
+        elif self.node_type == 'log':
+            out = self.weight[0]*th.log(th.abs(inputs[:, 0])+1e-5)
+        elif len(self.node_type)==2 and 'x' in self.node_type:
+            out = self.weight[0]*inputs[:, 0]
+        else:
+            raise TypeError("No such node type! {}".format(self.node_type))
+        #print(self.node_type, out[:, None].shape)
+        return out[:, None]
+
+class GraphNet(th.nn.Module):
+    def __init__(self, node, adj, operators):
+        super(GraphNet, self).__init__()
+        self.node = node
+        self.adj = adj
+        self.operators = operators
+        self.V = []
+        self.node_num = 0
+        if self.node != None:
+        # remove padding nodes
+            mask = self.node != self.operators.token2id['P']
+            self.node = self.node[mask]
+            self.adj = self.adj[:len(self.node), :len(self.node)]
+            self.order = self.topological_sort()
+            self.initialize()
+        else:
+            self.order = None
+        
+
+    def topological_sort(self, ):
+        adj_matrix = self.adj.tolist()
+        N = len(adj_matrix)
+        in_degree = [0] * N  
+        queue = []  
+        result = []  
+
+        for i in range(N):
+            for j in range(N):
+                if adj_matrix[j][i] > 0:
+                    in_degree[i] += 1
+
+        for i in range(N):
+            if in_degree[i] == 0:
+                queue.append(i)
+
+        while queue:
+            u = queue.pop(0)  
+            result.append(u)  
+            for v in range(N):
+                if adj_matrix[u][v] > 0:
+                    in_degree[v] -= 1  
+                    if in_degree[v] == 0:
+                        queue.append(v)  
+
+        if len(result) != N:
+            return "Graph has at least one cycle"
+        else:
+            return result
+
+    def initialize(self):
+
+        for node in self.node:
+            node_name = self.operators.id2token[int(node.item())]
+            node_ = Node(node_name, self.node_num)
+            if node_.node_type == 'add' or node_.node_type == 'sub':
+                node_.weight = th.randn(3, requires_grad=True)
+            else:
+                node_.weight = th.randn(1, requires_grad=True)
+            #print(node_.id, node_.node_type, node_.weight)
+            self.V.append(node_)
+            self.node_num += 1
+
+    def forward(self, X):
+        # X: shape=(N, d)
+
+        for id in self.order:
+            # find the inputs
+            inputs_id = th.nonzero(self.adj[:, id]).squeeze(dim=1)
+            if len(inputs_id) == 0:
+                var_ind = int(self.V[id].node_type[1:])-1
+                self.V[id].out = self.V[id](X[:, var_ind][:, None])
+            else:
+                inputs = []
+                for ind in inputs_id:
+                    if self.adj[:, id][ind] == 1:
+                        inputs.append(self.V[ind].out)
+                    elif self.adj[:, id][ind] == 2:
+                        inputs.append(self.V[ind].out)
+                        inputs.append(self.V[ind].out)
+                    else:
+                        raise ValueError("Error on adjacent matrix! Excessive in_degree (over 2)")
+                inputs = th.cat(inputs, dim=1)
+                self.V[id].out = self.V[id](inputs)
+            #pdb.set_trace()
+
+        output = self.V[self.order[-1]].out
+        return output
+    
+    def to_infix_(self, node):
+        weight = node.weight.detach()
+        # find the inputs of the current node
+        inputs_id = th.nonzero(self.adj[:, node.id]).squeeze(dim=1)
+        inputs = []
+        for ind in inputs_id:
+            if self.adj[:, node.id][ind] == 1:
+                inputs.append(self.to_infix_(self.V[ind]))
+            elif self.adj[:, node.id][ind] == 2:
+                inputs.append(self.to_infix_(self.V[ind]))
+                inputs.append(self.to_infix_(self.V[ind]))
+            else:
+                raise ValueError("Error on adjacent matrix! Excessive in_degree (over 2)")
+        if node.node_type == 'add':
+            # only the add and sub nodes have the bias 
+            out = "{}*({})+{}*({})+{}".format(str(weight[0].item()), inputs[0], str(weight[1].item()), 
+                                              inputs[1], str(weight[2].item()))
+        elif node.node_type == 'div':
+            out = "{}*({})/(({})+1e-5)".format(str(weight[0].item()), inputs[0], inputs[1])
+        elif node.node_type == 'sub':
+            out = "{}*({})-{}*({})+{}".format(str(weight[0].item()), inputs[0], str(weight[1].item()), 
+                                              inputs[1], str(weight[2].item()))
+        elif node.node_type == 'mul':
+            out = "{}*({})*({})".format(str(weight[0].item()), inputs[0], inputs[1])
+        elif node.node_type == 'sin':
+            out = "{}*sin({})".format(str(weight[0].item()), inputs[0])
+        elif node.node_type == 'cos':
+            out = "{}*cos({})".format(str(weight[0].item()), inputs[0])
+        elif node.node_type == 'sqrt':
+            out = "{}*sqrt({})".format(str(weight[0].item()), inputs[0])
+        elif node.node_type == 'square':
+            out = "{}*({})**2".format(str(weight[0].item()), inputs[0])
+        elif node.node_type == 'exp':
+            out = "{}*exp({})".format(str(weight[0].item()), inputs[0])
+        elif node.node_type == 'log':
+            out = "{}*log({})".format(str(weight[0].item()), inputs[0])
+        elif len(node.node_type)==2 and 'x' in node.node_type:
+            out = "{}*{}".format(str(weight[0].item()), node.node_type)
+        else:
+            raise TypeError("No such node type! {}".format(node.node_type))
+        #print(self.node_type, out[:, None].shape)
+        return out
+    
+    def to_infix(self, ):
+        reverse_order = self.order[::-1]
+        infix = self.to_infix_(self.V[reverse_order[0]])
+        return infix
+    
+    def save_as_json(self, expr_name, path, metric=None, save_expr=True):
+        results = {'weights':{}}
+        for v in self.V:
+            results['weights'][str(v.id)+'_'+v.node_type] = v.weight.detach().numpy().tolist()
+
+        if metric is not None:
+            results['r2'] = metric['r2']
+
+        if save_expr:
+            infix = self.to_infix()
+            results['expr'] = infix
+
+        results['node'] = self.node.numpy().tolist()
+        results['adj'] = self.adj.detach().numpy().tolist()
+
+        file_path = '{}/{}.json'.format(path, expr_name)
+        with open(file_path, 'w') as json_file:
+            json.dump(results, json_file, indent=4)
+
+        print("Successfully save the graph by weight and bias!")
+    
+    def load_graph_from_json(self, file_path):
+        with open(file_path, 'r') as file:
+            data = json.load(file)
+
+        node = data['node']
+        adj = data['adj']
+        weights = data['weights']
+        self.node = th.tensor(node)
+        self.adj = th.tensor(adj)
+
+        self.V = []
+        for key in weights.keys():
+            id, node_type = key.split('_')
+            node = Node(node_type, int(id))
+            node.weight = th.tensor(weights[key], requires_grad=True)
+            self.V.append(node)
+
+        self.node_num = len(weights.keys())
+        self.order = self.topological_sort()
+        self.initialize()
+        print("Successfully load the graph by weight and bias from json file!")
