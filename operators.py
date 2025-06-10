@@ -13,15 +13,15 @@ class Operators:
         "x1": 0,
         "x2": 0,
         "x3": 0,
-        "c": 0,
+        "C": 0,
         "P": 0
     }
 
     def __init__(self, operator_list, var_number):
         self.library = []
-        if "c" in operator_list:
-            operator_list.remove("c")
-            self.library = ['c']
+        if "C" in operator_list:
+            operator_list.remove("C")
+            self.library = ['C']
         self.operator_list = operator_list
         self.operator_num = len(self.operator_list)
         self.var_num = var_number
